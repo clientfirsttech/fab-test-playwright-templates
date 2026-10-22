@@ -1,0 +1,104 @@
+name: fab-test playwright check
+
+on:
+  workflow_dispatch:
+    inputs:
+      workspace:
+        description: "Fabric workspace name or GUID to validate"
+        required: true
+        type: string
+        default: "<your-workspace-name>"
+      artifact:
+        description: "Optional report name to narrow the run (blank = every deployed report in the workspace)"
+        required: false
+        type: string
+        default: ""
+      environment:
+        description: "Optional environment label (e.g. DEV, TEST, PROD)"
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: fab-test-playwright-${{ inputs.workspace }}
+  cancel-in-progress: false
+
+jobs:
+  playwright:
+    runs-on: ubuntu-latest
+    env:
+      FABRIC_TENANT_ID: ${{ secrets.FABRIC_TENANT_ID }}
+      FABRIC_CLIENT_ID: ${{ secrets.FABRIC_CLIENT_ID }}
+      FABRIC_CLIENT_SECRET: ${{ secrets.FABRIC_CLIENT_SECRET }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install fab-test with the playwright extra
+        run: pip install --pre "cft-fab-test[playwright]"
+
+      - name: Install Chromium
+        run: playwright install --with-deps chromium
+
+      - name: Confirm credentials resolve
+        # Diagnostic only: checks the Fabric API scope, not the Power BI embed-token
+        # path playwright itself uses, so it must not fail the job on its own.
+        continue-on-error: true
+        run: fab-test auth status --workspace "${{ inputs.workspace }}"
+
+      - name: Run playwright validation
+        run: >
+          fab-test playwright
+          --workspace "${{ inputs.workspace }}"
+          ${{ inputs.artifact != '' && format('--artifact "{0}"', inputs.artifact) || '' }}
+          ${{ inputs.environment != '' && format('--env "{0}"', inputs.environment) || '' }}
+          --report
+
+      - name: Upload fab-test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fab-test-results
+          path: fab-test-results/
+
+      - name: Summarize results with inline screenshots
+        if: always()
+        run: |
+          {
+            echo "## fab-test playwright — ${{ inputs.workspace }}"
+            echo
+            if [ -f fab-test-results/run.json ]; then
+              errors=$(jq -r '.totals.errors' fab-test-results/run.json)
+              warnings=$(jq -r '.totals.warnings' fab-test-results/run.json)
+              exit_code=$(jq -r '.exit_code' fab-test-results/run.json)
+              echo "**exit:** \`$exit_code\` · **errors:** $errors · **warnings:** $warnings"
+              echo
+              jq -r '.artifacts[] | "| \(.analyzer) | \(.artifact) | \(.status) | \(.errors) | \(.warnings) |"' fab-test-results/run.json \
+                | { echo "| analyzer | artifact | status | errors | warnings |"; echo "|---|---|---|---|---|"; cat; } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo >> "$GITHUB_STEP_SUMMARY"
+          echo "### Screenshots (first 6 failing cases)" >> "$GITHUB_STEP_SUMMARY"
+          count=0
+          while IFS= read -r shot; do
+            [ "$count" -ge 6 ] && break
+            case_dir=$(dirname "$shot")
+            echo "**$(basename "$case_dir")**" >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo
+              echo "![screenshot](data:image/png;base64,$(base64 -w0 "$shot"))"
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+            count=$((count + 1))
+          done < <(find fab-test-results/playwright -name 'screenshot.png' 2>/dev/null)
+
+          if [ "$count" -eq 0 ]; then
+            echo "_No screenshots found (nothing failed, or the run didn't reach a case)._" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "Full interactive report (report.html/index.html): download the \`fab-test-results\` artifact above and open it locally." >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,76 @@
+name: fab-test playwright check (Azure browsers)
+
+on:
+  workflow_dispatch:
+    inputs:
+      workspace:
+        description: "Fabric workspace name or GUID to validate"
+        required: true
+        type: string
+        default: "<your-workspace-name>"
+      artifact:
+        description: "Optional report name to narrow the run (blank = every deployed report in the workspace)"
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: fab-test-playwright-azure-${{ inputs.workspace }}
+  cancel-in-progress: false
+
+jobs:
+  playwright-azure:
+    runs-on: ubuntu-latest
+    env:
+      FABRIC_TENANT_ID: ${{ secrets.FABRIC_TENANT_ID }}
+      FABRIC_CLIENT_ID: ${{ secrets.FABRIC_CLIENT_ID }}
+      FABRIC_CLIENT_SECRET: ${{ secrets.FABRIC_CLIENT_SECRET }}
+      PLAYWRIGHT_SERVICE_URL: ${{ secrets.PLAYWRIGHT_SERVICE_URL }}
+      PLAYWRIGHT_SERVICE_ACCESS_TOKEN: ${{ secrets.PLAYWRIGHT_SERVICE_ACCESS_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Browsers run on Azure, so no `playwright install chromium` is needed.
+      - name: Install fab-test with the playwright extra
+        run: pip install --pre "cft-fab-test[playwright]"
+
+      - name: Run playwright validation on Azure browsers
+        run: >
+          fab-test playwright
+          --workspace "${{ inputs.workspace }}"
+          ${{ inputs.artifact != '' && format('--artifact "{0}"', inputs.artifact) || '' }}
+          --playwright-config .fab-test/playwright.yml
+          --report
+
+      - name: Upload fab-test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fab-test-results-azure
+          path: fab-test-results/
+          retention-days: 14
+
+      - name: Summarize results
+        if: always()
+        run: |
+          {
+            echo "## fab-test playwright (Azure) - ${{ inputs.workspace }}"
+            echo
+            if [ -f fab-test-results/run.json ]; then
+              echo "**exit:** \`$(jq -r '.exit_code' fab-test-results/run.json)\` · **errors:** $(jq -r '.totals.errors' fab-test-results/run.json) · **warnings:** $(jq -r '.totals.warnings' fab-test-results/run.json)"
+              echo
+              echo "| analyzer | artifact | status | errors | warnings |"
+              echo "|---|---|---|---|---|"
+              jq -r '.artifacts[] | "| \(.analyzer) | \(.artifact) | \(.status) | \(.errors) | \(.warnings) |"' fab-test-results/run.json
+            else
+              echo "_No run.json produced (the run stopped before analysis)._"
+            fi
+            echo
+            echo "Full HTML report: download the \`fab-test-results-azure\` artifact and open it locally."
+          } >> "$GITHUB_STEP_SUMMARY"
