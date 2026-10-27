@@ -30,6 +30,7 @@ jobs:
       FABRIC_TENANT_ID: ${{ secrets.FABRIC_TENANT_ID }}
       FABRIC_CLIENT_ID: ${{ secrets.FABRIC_CLIENT_ID }}
       FABRIC_CLIENT_SECRET: ${{ secrets.FABRIC_CLIENT_SECRET }}
+      PLAYWRIGHT_USER_NAME: ${{ secrets.PLAYWRIGHT_USER_NAME }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
